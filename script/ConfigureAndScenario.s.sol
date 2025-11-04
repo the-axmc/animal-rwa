@@ -7,91 +7,186 @@ import "../src/SpeciesToken.sol";
 import "../src/SpeciesOracle.sol";
 import "../src/SpeciesLending.sol";
 
-/// @notice One-shot helper to add a species, configure oracle/risk,
-/// seed 3 prices + accept, mint to admin, approve, fund vault, deposit, borrow.
 contract ConfigureAndScenario is Script {
-    /// @dev Call with --sig "run(address,address,address,address,uint256,uint8,uint64,uint256,uint16,uint16,uint16,uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint256)"
-    function run(
-        address usdcAddr, // Mock/real USDC (6d)
-        address speciesAddr, // SpeciesToken (ERC1155)
-        address oracleAddr, // SpeciesOracle
-        address lendingAddr, // SpeciesLending
-        uint256 speciesId, // e.g. 2 for CHICKEN
-        uint8 unitDecimals, // usually 18
-        uint64 heartbeat, // e.g. 86400 (24h)
-        uint256 maxDeviationBps, // e.g. 500 (5%)
-        uint16 ltvBps, // e.g. 4000 (40%)
-        uint16 liqThresholdBps, // e.g. 5500 (55%)
-        uint16 liqBonusBps, // e.g. 700  (7%)
-        uint256 cap, // protocol cap (use type(uint256).max for "no cap")
-        uint256 price1_8, // first quote (USD*1e8)
-        uint256 price2_8, // second quote
-        uint256 price3_8, // third quote
-        uint256 mintAmount18, // how many units to mint to caller (18d)
-        uint256 depositAmount18, // how many units to deposit (18d)
-        uint256 vaultFund6, // how much USDC to fund vault with (6d)
-        uint256 borrowAmount6 // how much to borrow (6d)
-    ) external {
+    struct Params {
+        address usdcAddr;
+        address speciesAddr;
+        address oracleAddr;
+        address lendingAddr;
+        uint256 speciesId;
+        uint8 unitDecimals;
+        uint64 heartbeat;
+        uint256 maxDeviationBps;
+        uint16 ltvBps;
+        uint16 liqThresholdBps;
+        uint16 liqBonusBps;
+        uint256 cap;
+        uint256 price1_8;
+        uint256 price2_8;
+        uint256 price3_8;
+        uint256 mintAmount18;
+        uint256 depositAmount18;
+        uint256 vaultFund6;
+        uint256 borrowAmount6;
+    }
+
+    // -------- CORE ----------
+    function _execute(Params memory p) internal {
         uint256 pk = vm.envUint("PRIVATE_KEY");
         address admin = vm.addr(pk);
 
-        MockUSDC usdc = MockUSDC(usdcAddr);
-        SpeciesToken species = SpeciesToken(speciesAddr);
-        SpeciesOracle oracle = SpeciesOracle(oracleAddr);
-        SpeciesLending lending = SpeciesLending(lendingAddr);
-
         vm.startBroadcast(pk);
 
-        // 1) Species setup
-        species.setSpeciesInfo(speciesId, unitDecimals, false);
+        // 1) Species
+        SpeciesToken(p.speciesAddr).setSpeciesInfo(
+            p.speciesId,
+            p.unitDecimals,
+            false
+        );
 
-        // 2) Oracle config + reporter
-        oracle.setConfig(speciesId, heartbeat, maxDeviationBps, false);
-        oracle.grantReporter(admin);
+        // 2) Oracle
+        SpeciesOracle(p.oracleAddr).setConfig(
+            p.speciesId,
+            p.heartbeat,
+            p.maxDeviationBps,
+            false
+        );
+        SpeciesOracle(p.oracleAddr).grantReporter(admin);
+        SpeciesOracle(p.oracleAddr).postPrice(p.speciesId, p.price1_8);
+        SpeciesOracle(p.oracleAddr).postPrice(p.speciesId, p.price2_8);
+        SpeciesOracle(p.oracleAddr).postPrice(p.speciesId, p.price3_8);
 
-        // 3) Lending risk
+        (uint256 px8, , bool ok) = SpeciesOracle(p.oracleAddr).currentPrice(
+            p.speciesId
+        );
+        require(ok, "Oracle NOT_OK");
+        SpeciesOracle(p.oracleAddr).accept(p.speciesId);
+
+        // 3) Risk
         SpeciesLending.Risk memory r = SpeciesLending.Risk({
-            ltvBps: ltvBps,
-            liqThresholdBps: liqThresholdBps,
-            liqBonusBps: liqBonusBps,
-            cap: cap
+            ltvBps: p.ltvBps,
+            liqThresholdBps: p.liqThresholdBps,
+            liqBonusBps: p.liqBonusBps,
+            cap: p.cap
         });
-        lending.setRisk(speciesId, r);
+        SpeciesLending(p.lendingAddr).setRisk(p.speciesId, r);
 
-        // 4) Seed 3 prices and accept
-        oracle.postPrice(speciesId, price1_8);
-        oracle.postPrice(speciesId, price2_8);
-        oracle.postPrice(speciesId, price3_8);
+        // 4) Mint/approve/fund/deposit/borrow
+        SpeciesToken(p.speciesAddr).mint(
+            admin,
+            p.speciesId,
+            p.mintAmount18,
+            ""
+        );
+        SpeciesToken(p.speciesAddr).setApprovalForAll(p.lendingAddr, true);
 
-        // Check oracle status before accepting (helpful in prod)
-        (uint256 px8, , bool ok) = oracle.currentPrice(speciesId);
-        require(ok, "Oracle not OK (stale/deviation); adjust quotes or config");
-        oracle.accept(speciesId);
-
-        // 5) Mint species to admin, approve vault
-        species.mint(admin, speciesId, mintAmount18, "");
-        species.setApprovalForAll(lendingAddr, true);
-
-        // 6) Fund vault with USDC so borrowing succeeds
-        if (vaultFund6 > 0) {
-            usdc.mint(lendingAddr, vaultFund6);
+        if (p.vaultFund6 > 0) {
+            MockUSDC(p.usdcAddr).mint(p.lendingAddr, p.vaultFund6);
         }
-
-        // 7) Deposit & borrow
-        if (depositAmount18 > 0) {
-            lending.deposit(speciesId, depositAmount18);
+        if (p.depositAmount18 > 0) {
+            SpeciesLending(p.lendingAddr).deposit(
+                p.speciesId,
+                p.depositAmount18
+            );
         }
-        if (borrowAmount6 > 0) {
-            lending.borrow(borrowAmount6);
+        if (p.borrowAmount6 > 0) {
+            SpeciesLending(p.lendingAddr).borrow(p.borrowAmount6);
         }
 
         vm.stopBroadcast();
 
-        console2.log("== ConfigureAndScenario done ==");
-        console2.log("SpeciesId :", speciesId);
-        console2.log("Median px :", px8);
-        console2.log("Minted    :", mintAmount18);
-        console2.log("Deposited :", depositAmount18);
-        console2.log("Borrowed  :", borrowAmount6);
+        console2.log("== ConfigureAndScenario DONE ==");
+        console2.log("speciesId :", p.speciesId);
+        console2.log("medianPx8 :", px8);
+        console2.log("minted    :", p.mintAmount18);
+        console2.log("deposited :", p.depositAmount18);
+        console2.log("borrowed  :", p.borrowAmount6);
+    }
+
+    // -------- MODE A: PACKED ARGS ----------
+    // Call with: --sig "run(address,address,address,address,uint256,bytes)"
+    // packed = abi.encode(
+    //   uint8 unitDecimals, uint64 heartbeat, uint256 maxDeviationBps,
+    //   uint16 ltvBps, uint16 liqThresholdBps, uint16 liqBonusBps, uint256 cap,
+    //   uint256 price1_8, uint256 price2_8, uint256 price3_8,
+    //   uint256 mintAmount18, uint256 depositAmount18, uint256 vaultFund6, uint256 borrowAmount6
+    // )
+    function run(
+        address usdcAddr,
+        address speciesAddr,
+        address oracleAddr,
+        address lendingAddr,
+        uint256 speciesId,
+        bytes memory packed
+    ) external {
+        Params memory p;
+        p.usdcAddr = usdcAddr;
+        p.speciesAddr = speciesAddr;
+        p.oracleAddr = oracleAddr;
+        p.lendingAddr = lendingAddr;
+        p.speciesId = speciesId;
+
+        (
+            p.unitDecimals,
+            p.heartbeat,
+            p.maxDeviationBps,
+            p.ltvBps,
+            p.liqThresholdBps,
+            p.liqBonusBps,
+            p.cap,
+            p.price1_8,
+            p.price2_8,
+            p.price3_8,
+            p.mintAmount18,
+            p.depositAmount18,
+            p.vaultFund6,
+            p.borrowAmount6
+        ) = abi.decode(
+            packed,
+            (
+                uint8,
+                uint64,
+                uint256,
+                uint16,
+                uint16,
+                uint16,
+                uint256,
+                uint256,
+                uint256,
+                uint256,
+                uint256,
+                uint256,
+                uint256,
+                uint256
+            )
+        );
+
+        _execute(p);
+    }
+
+    // -------- MODE B: ENV-ONLY ----------
+    // Put everything in env and call with --sig "run()"
+    function run() external {
+        Params memory p;
+        p.usdcAddr = vm.envAddress("USDC");
+        p.speciesAddr = vm.envAddress("SPECIES");
+        p.oracleAddr = vm.envAddress("ORACLE");
+        p.lendingAddr = vm.envAddress("LENDING");
+        p.speciesId = vm.envUint("SPECIES_ID");
+        p.unitDecimals = uint8(vm.envUint("UNIT_DECIMALS"));
+        p.heartbeat = uint64(vm.envUint("HEARTBEAT"));
+        p.maxDeviationBps = vm.envUint("MAX_DEV_BPS");
+        p.ltvBps = uint16(vm.envUint("LTV_BPS"));
+        p.liqThresholdBps = uint16(vm.envUint("LIQ_THRESHOLD_BPS"));
+        p.liqBonusBps = uint16(vm.envUint("LIQ_BONUS_BPS"));
+        p.cap = vm.envUint("CAP");
+        p.price1_8 = vm.envUint("PRICE1_8");
+        p.price2_8 = vm.envUint("PRICE2_8");
+        p.price3_8 = vm.envUint("PRICE3_8");
+        p.mintAmount18 = vm.envUint("MINT_18");
+        p.depositAmount18 = vm.envUint("DEPOSIT_18");
+        p.vaultFund6 = vm.envUint("VAULT_FUND_6");
+        p.borrowAmount6 = vm.envUint("BORROW_6");
+        _execute(p);
     }
 }
