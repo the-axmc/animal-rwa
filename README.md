@@ -175,5 +175,26 @@ accept(SPECIES_ID);
 Keep maxDeviationBps strict (e.g., 5%). If the market moves hard, either:
 
 > Step prices down/up in ≤5% increments and accept each step (preferred), or
-
 > Temporarily widen maxDeviationBps for that species (use sparingly) and then restore strict settings.
+
+**Chicken example**
+
+seed chicken price in around $2.00
+
+```bash
+# Species info (18d, unpaused)
+cast send $SPECIES "setSpeciesInfo(uint256,uint8,bool)" 2 18 false \
+  --private-key $PRIVATE_KEY --rpc-url $FUJI_RPC --chain 43113
+
+# Oracle config: 24h heartbeat, 5% deviation band, unpaused
+cast send $ORACLE "setConfig(uint256,uint64,uint256,bool)" 2 86400 500 false \
+  --private-key $PRIVATE_KEY --rpc-url $FUJI_RPC --chain 43113
+
+# Grant reporter to your admin (constructor already gave GUARDIAN to admin)
+cast send $ORACLE "grantReporter(address)" $(cast wallet address --private-key $PRIVATE_KEY) \
+  --private-key $PRIVATE_KEY --rpc-url $FUJI_RPC --chain 43113
+
+# Risk: LTV 40%, liqThreshold 55%, liqBonus 7%, no cap
+cast send $LENDING "setRisk(uint256,(uint16,uint16,uint16,uint256))" 2 "(4000,5500,700,0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff)" \
+  --private-key $PRIVATE_KEY --rpc-url $FUJI_RPC --chain 43113
+```
