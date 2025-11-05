@@ -1,4 +1,4 @@
-# Animal-RWA on Avalanche (Fuji)
+# Animal-RWA on Avalanche (Fuji) and Base Sepolia
 
 We built a minimal, audited-by-logic stack for species-backed RWA on Avalanche C-Chain (Fuji):
 
